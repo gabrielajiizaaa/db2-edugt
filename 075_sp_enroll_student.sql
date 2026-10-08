@@ -8,7 +8,9 @@
 -- Validaciones (enunciado, "Inscripcion, progreso y emision de certificados"):
 --   - El curso existe y esta disponible (status = 'available').
 --   - El estudiante no tiene ya una inscripcion activa en el curso.
---   - Aprobo (inscripcion 'completed') todos los cursos requisito previo.
+--   - Aprobo (inscripcion 'completed') todos los cursos requisito previo, y el
+--     certificado de esa inscripcion es valido: uno en revision por tiempo
+--     implausible (pending_review) o revocado todavia no cuenta como aprobado.
 --   - Si el curso tiene cohortes activas, debe elegir una; la cohorte debe
 --     pertenecer al curso, estar activa y no haber terminado.
 --   - Su billetera tiene saldo suficiente para el precio vigente.
@@ -78,9 +80,16 @@ BEGIN
               WHERE e.student_id = @student_id
                 AND e.course_id = cp.prerequisite_id
                 AND e.status = 'completed'
+                -- El enunciado pide revisar el certificado sospechoso "antes de
+                -- considerarlo valido": mientras este en revision o si fue
+                -- revocado, el requisito no esta aprobado.
+                AND NOT EXISTS (
+                    SELECT 1 FROM certificates c
+                    WHERE c.enrollment_id = e.id AND c.status <> 'valid'
+                )
           )
     )
-        THROW 60004, 'Requisito previo no aprobado: debe completar todos los cursos requisito antes de inscribirse.', 1;
+        THROW 60004, 'Requisito previo no aprobado: debe completar todos los cursos requisito (con certificado valido) antes de inscribirse.', 1;
 
     IF @cohort_id IS NULL AND EXISTS (SELECT 1 FROM cohorts WHERE course_id = @course_id AND active = 1)
         THROW 60005, 'Este curso se imparte en vivo: debe elegir una cohorte para inscribirse.', 1;
