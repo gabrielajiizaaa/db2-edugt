@@ -29,7 +29,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM categories WHERE id = @category_id)
         THROW 55002, 'La categoria especificada no existe.', 1;
 
-    IF @commission_percent < 0 OR @commission_percent > 100
+    IF @commission_percent IS NULL OR @commission_percent < 0 OR @commission_percent > 100
         THROW 55003, 'La comision debe estar entre 0 y 100.', 1;
 
     UPDATE categories
@@ -60,7 +60,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM users WHERE id = @instructor_id AND role = 'instructor')
         THROW 55102, 'El instructor especificado no existe o no tiene rol instructor.', 1;
 
-    IF @commission_percent < 0 OR @commission_percent > 100
+    IF @commission_percent IS NULL OR @commission_percent < 0 OR @commission_percent > 100
         THROW 55103, 'La comision debe estar entre 0 y 100.', 1;
 
     -- Si no se indica fecha de inicio, la comisión rige desde ahora.
@@ -79,6 +79,16 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
+        -- Serializa por instructor: dos administradores registrando a la vez
+        -- esperan en este punto, y la segunda sesion revalida con el estado ya
+        -- actualizado por la primera. UX_instructor_commissions_open es la
+        -- garantia final a nivel de motor.
+        IF EXISTS (
+            SELECT 1 FROM instructor_commissions WITH (UPDLOCK, HOLDLOCK)
+            WHERE instructor_id = @instructor_id AND valid_until IS NULL AND valid_from >= @valid_from
+        )
+            THROW 55104, 'La fecha de inicio debe ser posterior al inicio de la comision vigente del instructor.', 1;
+
         -- Cerrar la comisión vigente anterior (la que no tiene fin definido).
         UPDATE instructor_commissions
             SET valid_until = @valid_from
@@ -92,6 +102,10 @@ BEGIN
     END TRY
     BEGIN CATCH
         IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+
+        IF ERROR_NUMBER() IN (2601, 2627)
+            THROW 55105, 'Otro administrador registro una comision para este instructor al mismo tiempo. Intente de nuevo.', 1;
+
         THROW;
     END CATCH
 END
@@ -118,7 +132,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM courses WHERE id = @course_id)
         THROW 55202, 'El curso especificado no existe.', 1;
 
-    IF @max_capacity <= 0
+    IF @starts_at IS NULL
+        THROW 55205, 'La fecha de inicio de la cohorte es obligatoria.', 1;
+
+    IF @max_capacity IS NULL OR @max_capacity <= 0
         THROW 55203, 'El cupo maximo debe ser mayor a cero.', 1;
 
     IF @ends_at IS NOT NULL AND @ends_at <= @starts_at
@@ -149,10 +166,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM users WHERE id = @admin_id AND role = 'admin')
         THROW 55301, 'Solo un administrador puede establecer la politica de reembolso.', 1;
 
-    IF @deadline_days <= 0
+    IF @deadline_days IS NULL OR @deadline_days <= 0
         THROW 55302, 'El plazo en dias debe ser mayor a cero.', 1;
 
-    IF @max_progress_percent < 0 OR @max_progress_percent > 100
+    IF @max_progress_percent IS NULL OR @max_progress_percent < 0 OR @max_progress_percent > 100
         THROW 55303, 'El porcentaje de avance maximo debe estar entre 0 y 100.', 1;
 
     IF @valid_from IS NULL
@@ -166,6 +183,12 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
+
+        -- Serializa a los administradores: la segunda sesion espera aqui y
+        -- revalida contra la politica que acaba de crear la primera.
+        -- UX_refund_policies_active es la garantia final a nivel de motor.
+        IF EXISTS (SELECT 1 FROM refund_policies WITH (UPDLOCK, HOLDLOCK) WHERE active = 1 AND valid_from >= @valid_from)
+            THROW 55304, 'La fecha de inicio debe ser posterior al inicio de la politica vigente.', 1;
 
         -- Cerrar la política vigente anterior: se desactiva y se le pone fin.
         UPDATE refund_policies
@@ -182,6 +205,10 @@ BEGIN
     END TRY
     BEGIN CATCH
         IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+
+        IF ERROR_NUMBER() IN (2601, 2627)
+            THROW 55305, 'Otro administrador establecio una politica de reembolso al mismo tiempo. Intente de nuevo.', 1;
+
         THROW;
     END CATCH
 END
@@ -200,6 +227,9 @@ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM users WHERE id = @admin_id AND role = 'admin')
         THROW 55401, 'Solo un administrador puede destacar cursos en la portada.', 1;
+
+    IF @featured IS NULL
+        THROW 55404, 'Debe indicar si el curso se destaca (1) o no (0).', 1;
 
     IF NOT EXISTS (SELECT 1 FROM courses WHERE id = @course_id)
         THROW 55402, 'El curso especificado no existe.', 1;

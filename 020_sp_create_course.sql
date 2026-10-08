@@ -15,6 +15,11 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
+    -- Un NULL haria que las comparaciones de abajo den UNKNOWN y pasen la validacion,
+    -- terminando en un error crudo 515 dentro de la transaccion.
+    IF @title IS NULL OR LTRIM(RTRIM(@title)) = '' OR @price IS NULL OR @category_id IS NULL
+        THROW 50017, 'El titulo, el precio y la categoria del curso son obligatorios.', 1;
+
     IF NOT EXISTS (SELECT 1 FROM users WHERE id = @instructor_id AND role = 'instructor')
         THROW 50001, 'El instructor especificado no existe o no tiene rol instructor.', 1;
 
@@ -23,6 +28,9 @@ BEGIN
         WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = ci.instructor_id AND u.role = 'instructor')
     )
         THROW 50014, 'Uno o mas co-instructores no existen o no tienen rol instructor.', 1;
+
+    IF EXISTS (SELECT instructor_id FROM @CoInstructors GROUP BY instructor_id HAVING COUNT(*) > 1)
+        THROW 50018, 'Un instructor no puede aparecer mas de una vez en la lista de instructores.', 1;
 
     IF NOT EXISTS (SELECT 1 FROM categories WHERE id = @category_id)
         THROW 50002, 'La categoria especificada no existe.', 1;
@@ -85,6 +93,9 @@ BEGIN
         WHERE c.id IS NULL
     )
         THROW 50011, 'Todos los prerequisitos deben existir y estar en estado available.', 1;
+
+    IF EXISTS (SELECT prerequisite_course_id FROM @Prerequisites GROUP BY prerequisite_course_id HAVING COUNT(*) > 1)
+        THROW 50019, 'Un prerequisito no puede aparecer mas de una vez.', 1;
 
     BEGIN TRY
         BEGIN TRANSACTION;

@@ -114,12 +114,19 @@ CREATE TABLE instructor_commissions (
     CONSTRAINT CK_ic_dates             CHECK (valid_until IS NULL OR valid_until > valid_from)
 );
 
+-- Mismo patrón que UX_reviews_active: a nivel de motor, un instructor solo
+-- puede tener una comisión abierta (sin valid_until). Si dos administradores
+-- registran una comisión al mismo tiempo, la segunda inserción falla con 2601.
+CREATE UNIQUE INDEX UX_instructor_commissions_open
+    ON instructor_commissions (instructor_id)
+    WHERE valid_until IS NULL;
+
 CREATE TABLE courses (
     id           INT           IDENTITY(1,1) PRIMARY KEY,
     -- Código auto-generado formato EDU-YYYY-NNNNN
     code         VARCHAR(20)   NOT NULL,
     title        VARCHAR(200)  NOT NULL,
-    description  TEXT          NULL,
+    description  VARCHAR(MAX)  NULL,
     category_id  INT           NOT NULL,
     price        DECIMAL(10,2) NOT NULL,
     cover_image  VARCHAR(500)  NULL,
@@ -176,7 +183,7 @@ CREATE TABLE academic_reviews (
     course_id   INT          NOT NULL,
     reviewer_id INT          NOT NULL,
     result      VARCHAR(20)  NULL,    -- NULL mientras está in_progress
-    comments    TEXT         NULL,
+    comments    VARCHAR(MAX) NULL,
     started_at  DATETIME     NOT NULL,
     finished_at DATETIME     NULL,
 
@@ -285,6 +292,12 @@ CREATE TABLE refund_policies (
     CONSTRAINT CK_rp_dates     CHECK (valid_until IS NULL OR valid_until > valid_from)
 );
 
+-- Garantiza a nivel de motor una sola política vigente (active = 1) en toda
+-- la plataforma; mismo patrón que UX_reviews_active.
+CREATE UNIQUE INDEX UX_refund_policies_active
+    ON refund_policies (active)
+    WHERE active = 1;
+
 -- ============================================================
 -- ENROLLMENTS
 -- ============================================================
@@ -323,9 +336,10 @@ CREATE UNIQUE INDEX UX_enrollments_active
     ON enrollments (student_id, course_id)
     WHERE status = 'active';
 
--- Índices de soporte para JOINs frecuentes
+-- Índices de soporte para JOINs frecuentes.
+-- No se crea un índice solo por course_id: IX_enrollments_course_settlement
+-- (Gap 4) empieza por course_id y ya cubre esas búsquedas.
 CREATE INDEX IX_enrollments_student  ON enrollments (student_id);
-CREATE INDEX IX_enrollments_course   ON enrollments (course_id);
 CREATE INDEX IX_enrollments_period   ON enrollments (period_id);
 
 -- ============================================================
@@ -346,6 +360,15 @@ CREATE TABLE module_progress (
     CONSTRAINT FK_mp_module            FOREIGN KEY (module_id)     REFERENCES modules(id),
     CONSTRAINT CK_mp_version           CHECK (version >= 0)
 );
+
+-- sp_CompleteModule recalcula el progreso contando los modulos completados de
+-- la inscripcion. Sin este indice cubriente el conteo hace un scan del indice
+-- clustered y choca con las filas recien insertadas (aun sin confirmar) de
+-- otras inscripciones: con varios estudiantes terminando a la vez se probaron
+-- deadlocks reales. Con el Index Seek cada sesion solo toca sus propias filas.
+CREATE INDEX IX_module_progress_enrollment
+    ON module_progress (enrollment_id)
+    INCLUDE (module_id, completed);
 
 -- ============================================================
 -- LESSON PROGRESS
@@ -654,7 +677,7 @@ CREATE TABLE notifications (
     user_id    INT          NOT NULL,
     type       VARCHAR(50)  NOT NULL,
     subject    VARCHAR(300) NULL,
-    body       TEXT         NULL,
+    body       VARCHAR(MAX) NULL,
     sent       BIT          NOT NULL DEFAULT 0,
     created_at DATETIME     NOT NULL DEFAULT GETDATE(),
 
